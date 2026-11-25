@@ -86,6 +86,7 @@ pub(crate) async fn make_test_app() -> Box<App> {
         runtime_permission_profile_override: None,
         pending_server_profiles: HashMap::new(),
         file_search,
+        workflow_cards: crate::history_cell::WorkflowCardStore::default(),
         transcript_cells: Vec::new(),
         native_history: Default::default(),
         turn_tips: Default::default(),

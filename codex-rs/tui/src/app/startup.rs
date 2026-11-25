@@ -1080,6 +1080,7 @@ See the Codex keymap documentation for supported actions and examples."
             runtime_permission_profile_override: None,
             pending_server_profiles: HashMap::new(),
             file_search,
+            workflow_cards: crate::history_cell::WorkflowCardStore::default(),
             enhanced_keys_supported,
             keymap: runtime_keymap,
             key_chord_matcher: KeyChordMatcher::default(),

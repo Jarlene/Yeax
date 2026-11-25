@@ -664,6 +664,9 @@ pub struct Config {
     /// Plugin settings resolved with this snapshot, before capability admission.
     pub plugins: codex_config::types::PluginsConfigToml,
 
+    /// `[workflow]` knobs resolved from the merged config layers.
+    pub workflow: codex_config::config_toml::WorkflowConfigToml,
+
     /// Warnings collected during config load that should be shown on startup.
     pub startup_warnings: Vec<String>,
 
@@ -4764,6 +4767,7 @@ impl Config {
         let otel = otel::resolve_config(cfg.otel.unwrap_or_default(), &mut startup_warnings);
         let mut config = Self {
             plugins: cfg.plugins,
+            workflow: cfg.workflow.unwrap_or_default(),
             prefer_mxc,
             model,
             daybreak_enabled: cfg.daybreak.unwrap_or(false),

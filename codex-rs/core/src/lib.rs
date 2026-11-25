@@ -38,6 +38,7 @@ mod thread_input;
 pub use thread_input::InputWaitOutcome;
 mod turn_extension_data;
 pub use agent::helper_daybreak::goal::GoalDaybreakSnapshot;
+pub mod workflow;
 pub use turn_extension_data::WithTurnExtensionData;
 mod compact_model_fallback;
 mod compact_pending_input;

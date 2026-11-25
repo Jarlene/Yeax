@@ -1,0 +1,4 @@
+edition = "2024"
+# Mirror of codex-rs/rustfmt.toml so `cargo fmt --all` behaves the same when
+# invoked from the repository root.
+imports_granularity = "Item"

@@ -679,6 +679,55 @@ impl Session {
         self.services.agent_control.identity()
     }
 
+    /// Resolve the four workflow scopes for this thread once per process.
+    ///
+    /// The manager cache keys on the thread id, so the same `Arc<WorkflowPaths>`
+    /// (and therefore the same run root) is reused across tool calls.
+    pub(crate) async fn workflow_paths(
+        &self,
+    ) -> Result<Arc<crate::workflow::WorkflowPaths>, crate::workflow::WorkflowPathError> {
+        static PATHS: std::sync::OnceLock<
+            std::sync::Mutex<
+                std::collections::HashMap<
+                    codex_protocol::ThreadId,
+                    Arc<crate::workflow::WorkflowPaths>,
+                >,
+            >,
+        > = std::sync::OnceLock::new();
+        let cache = PATHS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+        if let Some(paths) = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&self.thread_id)
+            .cloned()
+        {
+            return Ok(paths);
+        }
+        let config = self.get_config().await;
+        // Project-scope discovery is gated on the same folder-trust decision
+        // the rest of the session uses; an unset trust level stays untrusted.
+        let project_trusted = config.active_project.is_trusted();
+        let paths = Arc::new(
+            crate::workflow::WorkflowPaths::resolve(
+                config.codex_home.to_path_buf(),
+                &config.cwd.to_path_buf(),
+                &self.thread_id.to_string(),
+                None,
+            )?
+            .with_project_trusted(project_trusted),
+        );
+        cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(self.thread_id, Arc::clone(&paths));
+        Ok(paths)
+    }
+
+    /// `[workflow]` knobs resolved from the effective configuration.
+    pub(crate) async fn workflow_config(&self) -> codex_config::config_toml::WorkflowConfigToml {
+        self.get_config().await.workflow.clone()
+    }
+
     pub(crate) async fn originator(&self) -> String {
         let state = self.state.lock().await;
         state.session_configuration.originator.clone()
@@ -1856,11 +1905,12 @@ impl Session {
             let mut account = crate::rollout_budget::ThreadBudgetAccount::Shared(Arc::clone(
                 &local_agent_runtime.rollout_budget,
             ));
-            if startup_error.is_none() && matches!(&agent_runtime, AgentRuntimeServices::Controller) {
-                if let Some(native) = agent_control.native_rollout_budget() {
-                    local_agent_runtime.rollout_budget = Arc::clone(&native);
-                    account = crate::rollout_budget::ThreadBudgetAccount::Native(native);
-                }
+            if startup_error.is_none()
+                && matches!(&agent_runtime, AgentRuntimeServices::Controller)
+                && let Some(native) = agent_control.native_rollout_budget()
+            {
+                local_agent_runtime.rollout_budget = Arc::clone(&native);
+                account = crate::rollout_budget::ThreadBudgetAccount::Native(native);
             }
             let budget_policy = crate::rollout_budget::ThreadBudgetPolicy::new(
                 account,

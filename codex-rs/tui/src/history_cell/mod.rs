@@ -118,6 +118,7 @@ mod session;
 mod spoken_artifacts;
 mod startup_warnings;
 mod warnings;
+mod workflow;
 
 pub(crate) use activity_details::ActivityDetails;
 pub(crate) use activity_preview::ActivityDisclosure;
@@ -145,6 +146,9 @@ pub(crate) use warnings::WarningId;
 pub(crate) use warnings::WarningKey;
 pub(crate) use warnings::warning_count;
 pub(crate) use warnings::warning_entries;
+pub(crate) use workflow::WorkflowCardChange;
+pub(crate) use workflow::WorkflowCardStore;
+pub(crate) use workflow::WorkflowHistoryCell;
 
 #[cfg(test)]
 mod tests;

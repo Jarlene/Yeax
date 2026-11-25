@@ -1,0 +1,9 @@
+load("//:defs.bzl", "codex_rust_crate")
+
+# TASK-020: library + codex-workflow-assets-gen binary + unit tests. The binary
+# reads core/src/workflow/assets through a path argument, so it needs no
+# compile-time data of its own.
+codex_rust_crate(
+    name = "workflow-assets-gen",
+    crate_name = "codex_workflow_assets_gen",
+)

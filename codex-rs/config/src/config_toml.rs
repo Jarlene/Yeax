@@ -171,6 +171,72 @@ pub struct RolloutTraceToml {
     pub max_bytes: Option<u64>,
 }
 
+/// Default number of concurrently active workflow runs per session.
+pub const DEFAULT_WORKFLOW_MAX_ACTIVE_RUNS: u8 = 4;
+/// Default agent-call budget for one workflow run.
+pub const DEFAULT_WORKFLOW_AGENT_BUDGET: u64 = 128;
+/// Default number of child agents a workflow may run concurrently.
+pub const DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS: u16 = 32;
+
+/// P1 workflow tuning knobs. All fields are optional and fall back to the
+/// defaults above; the hard upper bounds match the engine constants.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct WorkflowConfigToml {
+    /// Maximum active runs per session (1..=4).
+    #[schemars(range(min = 1, max = 4))]
+    pub max_active_runs: Option<u8>,
+    /// Default agent-call budget per run (1..=1024).
+    #[schemars(range(min = 1, max = 1024))]
+    pub default_agent_budget: Option<u64>,
+    /// Maximum concurrently running child agents (1..=1024).
+    #[schemars(range(min = 1, max = 1024))]
+    pub max_concurrent_agents: Option<u16>,
+}
+
+impl WorkflowConfigToml {
+    pub fn effective_max_active_runs(&self) -> u8 {
+        self.max_active_runs
+            .unwrap_or(DEFAULT_WORKFLOW_MAX_ACTIVE_RUNS)
+    }
+
+    pub fn effective_default_agent_budget(&self) -> u64 {
+        self.default_agent_budget
+            .unwrap_or(DEFAULT_WORKFLOW_AGENT_BUDGET)
+    }
+
+    pub fn effective_max_concurrent_agents(&self) -> u16 {
+        self.max_concurrent_agents
+            .unwrap_or(DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS)
+    }
+
+    /// Reject values outside the documented ranges before a run is created.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(value) = self.max_active_runs
+            && !(1..=4).contains(&value)
+        {
+            return Err(format!(
+                "workflow.max_active_runs must be in 1..=4, got {value}"
+            ));
+        }
+        if let Some(value) = self.default_agent_budget
+            && !(1..=1024).contains(&value)
+        {
+            return Err(format!(
+                "workflow.default_agent_budget must be in 1..=1024, got {value}"
+            ));
+        }
+        if let Some(value) = self.max_concurrent_agents
+            && !(1..=1024).contains(&value)
+        {
+            return Err(format!(
+                "workflow.max_concurrent_agents must be in 1..=1024, got {value}"
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Base config deserialized from ~/.codex/config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -531,6 +597,10 @@ pub struct ConfigToml {
     // Injects known feature keys into the schema and forbids unknown keys.
     #[schemars(schema_with = "crate::schema::features_schema")]
     pub features: Option<FeaturesToml>,
+
+    /// Optional P1 tuning knobs for the workflow subsystem.
+    #[serde(default)]
+    pub workflow: Option<WorkflowConfigToml>,
 
     /// Suppress warnings about unstable (under development) features.
     pub suppress_unstable_features_warning: Option<bool>,

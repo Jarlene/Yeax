@@ -570,6 +570,7 @@ mod thread_sections;
 mod token_usage_replay;
 mod turn_processor;
 mod windows_sandbox_processor;
+pub(crate) mod workflow_processor;
 
 pub(crate) use account_processor::AccountRequestProcessor;
 pub(crate) use apps_processor::AppsRequestProcessor;

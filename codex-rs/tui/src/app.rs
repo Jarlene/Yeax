@@ -319,6 +319,7 @@ mod voice_owner;
 #[cfg(test)]
 #[path = "app/warnings_tests.rs"]
 mod warnings_tests;
+pub(crate) mod workflows;
 mod working_directory;
 mod workspace_hud;
 
@@ -602,6 +603,9 @@ pub(crate) struct App {
     pending_server_profiles: HashMap<ThreadId, PermissionProfileSelection>,
 
     pub(crate) file_search: FileSearchManager,
+
+    /// Session-local workflow card state; the app-server remains the source of truth.
+    pub(crate) workflow_cards: crate::history_cell::WorkflowCardStore,
 
     pub(crate) transcript_cells: Vec<Arc<dyn HistoryCell>>,
     native_history: native_history::NativeHistory,

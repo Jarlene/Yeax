@@ -522,6 +522,10 @@ impl App {
                 }
                 return;
             }
+            ServerNotification::WorkflowUpdated(notification) => {
+                self.apply_workflow_update(notification);
+                return;
+            }
             _ => {}
         }
 

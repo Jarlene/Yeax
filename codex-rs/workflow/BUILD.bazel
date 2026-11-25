@@ -1,0 +1,9 @@
+load("//:defs.bzl", "codex_rust_crate")
+
+# TASK-020: the workflow engine is a plain library with unit tests; the macro
+# derives codex_workflow (rust_library) and codex-workflow-unit-tests
+# (rust_test) from Cargo.toml.
+codex_rust_crate(
+    name = "workflow",
+    crate_name = "codex_workflow",
+)

@@ -1678,6 +1678,40 @@ client_request_definitions! {
         serialization: fuzzy_session_id(params.session_id),
         response: FuzzyFileSearchSessionStopResponse,
     },
+
+    #[experimental("workflow/list")]
+    WorkflowList => "workflow/list" {
+        params: v2::WorkflowListParams,
+        serialization: None,
+        response: v2::WorkflowListResponse,
+    },
+    #[experimental("workflow/pause")]
+    WorkflowPause => "workflow/pause" {
+        params: v2::WorkflowPauseParams,
+        serialization: None,
+        manual_payload_conversion: manual,
+        response: v2::WorkflowControlResponse,
+    },
+    #[experimental("workflow/resume")]
+    WorkflowResume => "workflow/resume" {
+        params: v2::WorkflowResumeParams,
+        serialization: None,
+        manual_payload_conversion: manual,
+        response: v2::WorkflowControlResponse,
+    },
+    #[experimental("workflow/stop")]
+    WorkflowStop => "workflow/stop" {
+        params: v2::WorkflowStopParams,
+        serialization: None,
+        manual_payload_conversion: manual,
+        response: v2::WorkflowControlResponse,
+    },
+    #[experimental("workflow/save")]
+    WorkflowSave => "workflow/save" {
+        params: v2::WorkflowSaveParams,
+        serialization: None,
+        response: v2::WorkflowSaveResponse,
+    },
 }
 
 /// Generates an `enum ServerRequest` where each variant is a request that the
@@ -2217,6 +2251,9 @@ server_notification_definitions! {
     ThreadRealtimeError => "thread/realtime/error" (v2::ThreadRealtimeErrorNotification),
     #[experimental("thread/realtime/closed")]
     ThreadRealtimeClosed => "thread/realtime/closed" (v2::ThreadRealtimeClosedNotification),
+
+    #[experimental("workflow/updated")]
+    WorkflowUpdated => "workflow/updated" (v2::WorkflowUpdatedNotification),
 
     /// Notifies the user of world-writable directories on Windows, which cannot be protected by the sandbox.
     WindowsWorldWritableWarning => "windows/worldWritableWarning" (v2::WindowsWorldWritableWarningNotification),

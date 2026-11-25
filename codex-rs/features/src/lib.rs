@@ -607,6 +607,8 @@ pub enum Feature {
     ResponsesWebsockets,
     /// Legacy rollout flag for Responses API WebSocket transport v2 experiments.
     ResponsesWebsocketsV2,
+    /// Enable Rhai-scripted workflows that orchestrate child agents.
+    Workflows,
 }
 
 impl Feature {
@@ -2617,6 +2619,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "workspace_dependencies",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::Workflows,
+        key: "workflows",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
 ];
 

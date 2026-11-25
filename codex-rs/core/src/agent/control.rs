@@ -61,6 +61,8 @@ pub(crate) use self::runtime::AgentTreeMembership;
 pub(crate) use self::runtime::AgentTreeShutdownState;
 pub(crate) use self::runtime::AgentTreeTeardownGuard;
 pub(crate) use self::runtime::LocalAgentRuntime;
+pub(crate) use self::runtime::WorkflowChildGuard;
+pub(crate) use self::runtime::WorkflowChildRegistry;
 pub(crate) use self::watch::StatusSubscription;
 pub(in crate::agent) use spawn::effective_spawn_config;
 pub(in crate::agent) use spawn::fresh_child_history_and_tools;

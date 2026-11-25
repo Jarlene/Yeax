@@ -229,7 +229,8 @@ fn persisted_event_msg(
         | EventMsg::CollabAgentInteractionBegin(_)
         | EventMsg::CollabWaitingBegin(_)
         | EventMsg::CollabCloseBegin(_)
-        | EventMsg::CollabResumeBegin(_) => None,
+        | EventMsg::CollabResumeBegin(_)
+        | EventMsg::WorkflowUpdated(_) => None,
     }
 }
 

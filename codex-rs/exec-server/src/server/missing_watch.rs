@@ -109,6 +109,9 @@ fn watch_missing(
     // inotify stays attached to a covered directory. Arm mount-table notifications
     // before installing directory watches and verifying the observed paths.
     #[cfg(target_os = "linux")]
+    // Baseline API: `AsyncFd::with_interest` is deprecated upstream; migrating to
+    // registered descriptors is out of scope for the workflow port.
+    #[allow(deprecated)]
     let mounts = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)

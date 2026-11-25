@@ -1,0 +1,591 @@
+//! Deterministic generation and verification of embedded workflow assets.
+//!
+//! Source layout (relative to the assets directory):
+//!
+//! ```text
+//! builtin/*.rhai
+//! bundled/*.rhai
+//! bundled/prompts/**/*.md
+//! ```
+//!
+//! The generator emits one Rust source file that embeds every file as a string
+//! literal together with its SHA-256. Output ordering, line endings, and the
+//! literal encoding are fixed so that repeated runs are byte-identical.
+
+use std::collections::BTreeMap;
+use std::fmt;
+use std::fs;
+use std::path::Path;
+use std::path::PathBuf;
+
+use sha2::Digest;
+use sha2::Sha256;
+
+/// Maximum size of one workflow script (matches the runtime cap).
+pub const MAX_WORKFLOW_SCRIPT_BYTES: usize = 1_048_576;
+/// Maximum size of one prompt template (matches the runtime cap).
+pub const MAX_TEMPLATE_BYTES: usize = 1_048_576;
+
+/// Fields that P0 cannot map onto Yeax agent options. They must not appear in
+/// compiled-in assets; the runtime rejects them with `HostError::Unsupported`.
+pub const UNSUPPORTED_OPTION_FIELDS: &[&str] = &[
+    "capability_mode",
+    "isolation_worktree",
+    "max_output_tokens",
+    "resume_from",
+    "fork_context",
+];
+
+#[derive(Debug)]
+pub enum AssetError {
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    NotUtf8 {
+        path: PathBuf,
+    },
+    TooLarge {
+        path: PathBuf,
+        max: usize,
+        actual: usize,
+    },
+    CarriageReturn {
+        path: PathBuf,
+    },
+    InvalidScript {
+        path: PathBuf,
+        reason: String,
+    },
+    NameMismatch {
+        path: PathBuf,
+        file_stem: String,
+        meta_name: String,
+    },
+    DuplicateTemplateKey {
+        key: String,
+        first: String,
+        second: String,
+    },
+    UnsupportedOptionField {
+        path: PathBuf,
+        field: String,
+        line: Option<usize>,
+        column: Option<usize>,
+    },
+    Stale {
+        path: PathBuf,
+    },
+}
+
+impl fmt::Display for AssetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
+            Self::NotUtf8 { path } => {
+                write!(f, "{}: asset is not valid UTF-8", path.display())
+            }
+            Self::TooLarge { path, max, actual } => write!(
+                f,
+                "{}: asset is {actual} bytes, maximum is {max}",
+                path.display()
+            ),
+            Self::CarriageReturn { path } => write!(
+                f,
+                "{}: asset must use LF line endings (found CR)",
+                path.display()
+            ),
+            Self::InvalidScript { path, reason } => {
+                write!(f, "{}: invalid workflow script: {reason}", path.display())
+            }
+            Self::NameMismatch {
+                path,
+                file_stem,
+                meta_name,
+            } => write!(
+                f,
+                "{}: file name `{file_stem}` must match meta.name `{meta_name}`",
+                path.display()
+            ),
+            Self::DuplicateTemplateKey { key, first, second } => write!(
+                f,
+                "duplicate template key `{key}` from `{first}` and `{second}`"
+            ),
+            Self::UnsupportedOptionField {
+                path,
+                field,
+                line,
+                column,
+            } => {
+                write!(
+                    f,
+                    "{}: builtin asset uses unsupported option field `{field}`",
+                    path.display()
+                )?;
+                match (line, column) {
+                    (Some(line), Some(column)) => write!(f, " at {line}:{column}"),
+                    _ => Ok(()),
+                }
+            }
+            Self::Stale { path } => write!(
+                f,
+                "{}: generated assets are out of date; run `cargo run -p \
+                 codex-workflow-assets-gen -- --write`",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AssetError {}
+
+/// One asset embedded in `generated.rs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddedAsset {
+    pub path: String,
+    pub name: String,
+    pub sha256: String,
+    pub content: String,
+}
+
+/// Full deterministic asset table.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AssetTable {
+    pub builtin: Vec<EmbeddedAsset>,
+    pub bundled: Vec<EmbeddedAsset>,
+    pub prompts: Vec<EmbeddedAsset>,
+}
+
+impl AssetTable {
+    /// Render the Rust source that is checked into `assets/generated.rs`.
+    pub fn to_rust(&self) -> String {
+        let mut out = String::new();
+        out.push_str(
+            "//! Generated embedded workflow assets (built-in workflows and prompt templates).\n",
+        );
+        out.push_str("//!\n");
+        out.push_str(
+            "//! This file is produced by `codex-workflow-assets-gen`; do not edit by hand.\n\n",
+        );
+        out.push_str("// @generated by `cargo run -p codex-workflow-assets-gen -- --write`.\n");
+        out.push_str("// Do not edit by hand; `--check` verifies byte-for-byte equality.\n");
+        out.push_str("//\n");
+        out.push_str("// Source of truth: `codex-rs/core/src/workflow/assets/`.\n\n");
+        // The checked-in file is generator output, so rustfmt must not rewrite
+        // any item; otherwise `cargo fmt --check` and `--check` disagree forever.
+        out.push_str("#[rustfmt::skip]\n");
+        out.push_str("#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n");
+        out.push_str("pub struct EmbeddedAsset {\n");
+        out.push_str("    pub path: &'static str,\n");
+        out.push_str("    pub name: &'static str,\n");
+        out.push_str("    pub sha256: &'static str,\n");
+        out.push_str("    pub content: &'static str,\n");
+        out.push_str("}\n\n");
+        push_table(&mut out, "BUILTIN_WORKFLOWS", &self.builtin);
+        out.push('\n');
+        push_table(&mut out, "BUNDLED_WORKFLOWS", &self.bundled);
+        out.push('\n');
+        push_table(&mut out, "BUNDLED_PROMPTS", &self.prompts);
+        out.push('\n');
+        out.push_str("#[rustfmt::skip]\n");
+        out.push_str("pub const TEMPLATE_KEYS: &[&str] = &[\n");
+        for asset in &self.prompts {
+            out.push_str(&format!("    {:?},\n", asset.name));
+        }
+        out.push_str("];\n\n");
+        out.push_str("#[rustfmt::skip]\n");
+        out.push_str("pub fn builtin_workflows() -> &'static [EmbeddedAsset] {\n");
+        out.push_str("    BUILTIN_WORKFLOWS\n");
+        out.push_str("}\n\n");
+        out.push_str("#[rustfmt::skip]\n");
+        out.push_str("pub fn bundled_workflows() -> &'static [EmbeddedAsset] {\n");
+        out.push_str("    BUNDLED_WORKFLOWS\n");
+        out.push_str("}\n\n");
+        out.push_str("#[rustfmt::skip]\n");
+        out.push_str("pub fn bundled_prompts() -> &'static [EmbeddedAsset] {\n");
+        out.push_str("    BUNDLED_PROMPTS\n");
+        out.push_str("}\n\n");
+        out.push_str("/// Look up a prompt template by its bare key.\n");
+        out.push_str("#[rustfmt::skip]\n");
+        out.push_str("pub fn template(name: &str) -> Option<&'static str> {\n");
+        out.push_str("    match name {\n");
+        for asset in &self.prompts {
+            out.push_str(&format!(
+                "        {:?} => Some({:?}),\n",
+                asset.name, asset.content
+            ));
+        }
+        out.push_str("        _ => None,\n");
+        out.push_str("    }\n");
+        out.push_str("}\n");
+        out
+    }
+}
+
+fn push_table(out: &mut String, name: &str, assets: &[EmbeddedAsset]) {
+    out.push_str("#[rustfmt::skip]\n");
+    out.push_str(&format!("pub const {name}: &[EmbeddedAsset] = &[\n"));
+    for asset in assets {
+        out.push_str("    EmbeddedAsset {\n");
+        out.push_str(&format!("        path: {:?},\n", asset.path));
+        out.push_str(&format!("        name: {:?},\n", asset.name));
+        out.push_str(&format!("        sha256: {:?},\n", asset.sha256));
+        out.push_str(&format!("        content: {:?},\n", asset.content));
+        out.push_str("    },\n");
+    }
+    out.push_str("];\n");
+}
+
+/// Build the asset table from the source directory.
+pub fn collect(assets_dir: &Path) -> Result<AssetTable, AssetError> {
+    let builtin = collect_scripts(&assets_dir.join("builtin"), true)?;
+    let bundled = collect_scripts(&assets_dir.join("bundled"), false)?;
+    let prompts = collect_prompts(&assets_dir.join("bundled").join("prompts"))?;
+    Ok(AssetTable {
+        builtin,
+        bundled,
+        prompts,
+    })
+}
+
+/// Generate the complete `generated.rs` source from the assets directory.
+pub fn generate(assets_dir: &Path) -> Result<String, AssetError> {
+    Ok(collect(assets_dir)?.to_rust())
+}
+
+/// Regenerate and compare byte-for-byte with the checked-in file.
+pub fn check(assets_dir: &Path, generated_path: &Path) -> Result<(), AssetError> {
+    let expected = generate(assets_dir)?;
+    let actual = fs::read(generated_path).map_err(|source| AssetError::Io {
+        path: generated_path.to_path_buf(),
+        source,
+    })?;
+    if actual != expected.as_bytes() {
+        return Err(AssetError::Stale {
+            path: generated_path.to_path_buf(),
+        });
+    }
+    Ok(())
+}
+
+/// Default assets directory for the workspace checkout.
+pub fn default_assets_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("core")
+        .join("src")
+        .join("workflow")
+        .join("assets")
+}
+
+/// Default generated file next to the assets.
+pub fn default_generated_path() -> PathBuf {
+    default_assets_dir().join("generated.rs")
+}
+
+fn collect_scripts(dir: &Path, reject_unsupported: bool) -> Result<Vec<EmbeddedAsset>, AssetError> {
+    let mut entries = read_shallow_rhai(dir)?;
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut assets = Vec::with_capacity(entries.len());
+    for (relative, path) in entries {
+        let content = read_normalized(&path, MAX_WORKFLOW_SCRIPT_BYTES)?;
+        let meta =
+            codex_workflow::extract_meta(&content).map_err(|error| AssetError::InvalidScript {
+                path: path.clone(),
+                reason: error.to_string(),
+            })?;
+        let file_stem = file_stem(&path)?;
+        if file_stem != meta.name {
+            return Err(AssetError::NameMismatch {
+                path,
+                file_stem,
+                meta_name: meta.name,
+            });
+        }
+        if reject_unsupported {
+            check_unsupported_fields(&path, &content)?;
+        }
+        assets.push(EmbeddedAsset {
+            path: relative,
+            name: meta.name,
+            sha256: sha256_hex(content.as_bytes()),
+            content,
+        });
+    }
+    Ok(assets)
+}
+
+fn collect_prompts(dir: &Path) -> Result<Vec<EmbeddedAsset>, AssetError> {
+    let mut files = Vec::new();
+    walk_markdown(dir, dir, &mut files)?;
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut seen: BTreeMap<String, String> = BTreeMap::new();
+    let mut assets = Vec::with_capacity(files.len());
+    for (relative, path) in files {
+        let content = read_normalized(&path, MAX_TEMPLATE_BYTES)?;
+        let name = file_stem(&path)?;
+        if let Some(first) = seen.insert(name.clone(), relative.clone()) {
+            return Err(AssetError::DuplicateTemplateKey {
+                key: name,
+                first,
+                second: relative,
+            });
+        }
+        assets.push(EmbeddedAsset {
+            path: relative,
+            name,
+            sha256: sha256_hex(content.as_bytes()),
+            content,
+        });
+    }
+    Ok(assets)
+}
+
+fn read_shallow_rhai(dir: &Path) -> Result<Vec<(String, PathBuf)>, AssetError> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(AssetError::Io {
+                path: dir.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| AssetError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let file_type = entry.file_type().map_err(|source| AssetError::Io {
+            path: entry.path(),
+            source,
+        })?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rhai") {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || name.ends_with(".tmp") {
+            continue;
+        }
+        let relative = format!("{}/{}", dir_name(dir), name);
+        out.push((relative, path));
+    }
+    Ok(out)
+}
+
+fn dir_name(dir: &Path) -> String {
+    dir.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn walk_markdown(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, PathBuf)>,
+) -> Result<(), AssetError> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(AssetError::Io {
+                path: dir.to_path_buf(),
+                source,
+            });
+        }
+    };
+    for entry in entries {
+        let entry = entry.map_err(|source| AssetError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let file_type = entry.file_type().map_err(|source| AssetError::Io {
+            path: entry.path(),
+            source,
+        })?;
+        let path = entry.path();
+        if file_type.is_dir() {
+            walk_markdown(root, &path, out)?;
+            continue;
+        }
+        if !file_type.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root.parent().unwrap_or(root))
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        out.push((relative, path));
+    }
+    Ok(())
+}
+
+fn read_normalized(path: &Path, max: usize) -> Result<String, AssetError> {
+    let bytes = fs::read(path).map_err(|source| AssetError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if bytes.len() > max {
+        return Err(AssetError::TooLarge {
+            path: path.to_path_buf(),
+            max,
+            actual: bytes.len(),
+        });
+    }
+    if bytes.contains(&b'\r') {
+        return Err(AssetError::CarriageReturn {
+            path: path.to_path_buf(),
+        });
+    }
+    String::from_utf8(bytes).map_err(|_| AssetError::NotUtf8 {
+        path: path.to_path_buf(),
+    })
+}
+
+fn file_stem(path: &Path) -> Result<String, AssetError> {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| AssetError::InvalidScript {
+            path: path.to_path_buf(),
+            reason: "file name is not valid UTF-8".to_string(),
+        })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// Reject P0-unsupported option fields in a builtin script.
+///
+/// The check scans the script after removing comments and string/raw-string
+/// literals, matching identifiers on word boundaries. Builtin assets are owned
+/// by this repository, so rejecting any occurrence of these names is a safe,
+/// strictly stronger check than inspecting only `agent`/`parallel` option maps.
+///
+/// The scan is intentionally lexical: `rhai`'s public `ASTNode` does not expose
+/// the underlying expression, so a tokenizer-level pass is the stable public
+/// way to enforce this build-time rule.
+pub fn check_unsupported_fields(path: &Path, script: &str) -> Result<(), AssetError> {
+    let code = strip_comments_and_literals(script);
+    for field in UNSUPPORTED_OPTION_FIELDS {
+        if let Some(offset) = find_identifier(&code, field) {
+            let (line, column) = line_column(&code, offset);
+            return Err(AssetError::UnsupportedOptionField {
+                path: path.to_path_buf(),
+                field: (*field).to_string(),
+                line: Some(line),
+                column: Some(column),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Replace comments and string literals with spaces while preserving offsets.
+fn strip_comments_and_literals(script: &str) -> String {
+    let bytes = script.as_bytes();
+    let mut out = vec![b' '; bytes.len()];
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes.get(index) {
+            Some(b'/') if bytes.get(index + 1) == Some(&b'/') => {
+                while index < bytes.len() && bytes.get(index) != Some(&b'\n') {
+                    index += 1;
+                }
+            }
+            Some(b'/') if bytes.get(index + 1) == Some(&b'*') => {
+                index += 2;
+                while index < bytes.len() {
+                    if bytes.get(index) == Some(&b'*') && bytes.get(index + 1) == Some(&b'/') {
+                        index += 2;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            Some(quote @ (b'"' | b'\'' | b'`')) => {
+                let quote = *quote;
+                index += 1;
+                while index < bytes.len() {
+                    match bytes.get(index) {
+                        Some(b'\\') if quote != b'`' => {
+                            index = index.saturating_add(2);
+                        }
+                        Some(byte) if *byte == quote => {
+                            index += 1;
+                            break;
+                        }
+                        _ => index += 1,
+                    }
+                }
+            }
+            Some(byte) => {
+                if let Some(slot) = out.get_mut(index) {
+                    *slot = *byte;
+                }
+                index += 1;
+            }
+            None => break,
+        }
+    }
+    String::from_utf8(out).unwrap_or_default()
+}
+
+fn find_identifier(code: &str, needle: &str) -> Option<usize> {
+    let bytes = code.as_bytes();
+    let needle = needle.as_bytes();
+    if needle.is_empty() || bytes.len() < needle.len() {
+        return None;
+    }
+    for start in 0..=bytes.len() - needle.len() {
+        if bytes.get(start..start + needle.len()) != Some(needle) {
+            continue;
+        }
+        let before_ok = start == 0
+            || bytes
+                .get(start - 1)
+                .is_none_or(|byte| !is_identifier_byte(*byte));
+        let end = start + needle.len();
+        let after_ok =
+            end == bytes.len() || bytes.get(end).is_none_or(|byte| !is_identifier_byte(*byte));
+        if before_ok && after_ok {
+            return Some(start);
+        }
+    }
+    None
+}
+
+fn is_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn line_column(code: &str, offset: usize) -> (usize, usize) {
+    let mut line = 1usize;
+    let mut column = 1usize;
+    for byte in code.as_bytes().iter().take(offset) {
+        if *byte == b'\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    (line, column)
+}
+
+#[cfg(test)]
+#[path = "lib_tests.rs"]
+mod tests;

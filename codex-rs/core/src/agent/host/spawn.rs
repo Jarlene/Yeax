@@ -1,12 +1,15 @@
 //! Create a host-reserved child on the invoking thread's manager.
 
+use super::completion::AgentTurnOutcomeReporter;
 use super::invocation::HostToolInvocationLookup;
 use super::invocation::ToolInvocationContext;
+use super::ownership::AgentRuntimeOwnership;
 use super::types::HostThreadSpawnReservation;
 use super::types::PreparedChildInheritance;
 use crate::agent::control::AgentControlInit;
 use crate::agent::control::PendingSpawn;
 use crate::agent::control::SpawnOwner;
+use crate::agent::control::WorkflowChildGuard;
 use crate::agent::control::effective_spawn_config;
 use crate::agent::control::fresh_child_history_and_tools;
 use crate::agent::control::inherited_exec_policy_for_parent;
@@ -28,6 +31,33 @@ use codex_protocol::error::Result;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadSource;
 use std::sync::Arc;
+
+/// Coordination choices for a child created outside a tool invocation.
+///
+/// The tool path keeps [`HostChildExtras::default`] so its startup inputs stay
+/// byte-for-byte identical to the pre-workflow behavior.
+pub(crate) struct HostChildExtras {
+    pub(crate) ownership: AgentRuntimeOwnership,
+    pub(crate) outcome_reporter: Option<Arc<dyn AgentTurnOutcomeReporter>>,
+    /// Run id; `Some` registers the child in the tree's workflow registry.
+    pub(crate) workflow_run: Option<String>,
+}
+
+impl Default for HostChildExtras {
+    fn default() -> Self {
+        Self {
+            ownership: AgentRuntimeOwnership::Controller,
+            outcome_reporter: None,
+            workflow_run: None,
+        }
+    }
+}
+
+/// A created child plus the registration the caller must explicitly take over.
+pub(crate) struct HostChildSpawn {
+    pub(crate) child: ThreadSpawnResult,
+    pub(crate) registration: Option<WorkflowChildGuard>,
+}
 
 async fn prepare_spawn_inputs(
     parent: &CodexThread,
@@ -99,13 +129,14 @@ async fn prepare_spawn_inputs(
     Ok((thread_options, inheritance, client_metadata))
 }
 
-pub(super) async fn create_spawn(
+async fn create_spawn_impl(
     parent: &CodexThread,
-    invocation: &ToolInvocationContext,
     request: ChildSpawnSettings,
     task_name: AgentPath,
     reservation: HostThreadSpawnReservation,
-) -> std::result::Result<ThreadSpawnResult, ThreadSpawnError> {
+    extras: HostChildExtras,
+    active: Option<&ToolInvocationContext>,
+) -> std::result::Result<HostChildSpawn, ThreadSpawnError> {
     let (mut options, inheritance, client_metadata) =
         Box::pin(prepare_spawn_inputs(parent, request)).await?;
     let caller = parent.session.thread_id;
@@ -134,12 +165,31 @@ pub(super) async fn create_spawn(
         .into());
     }
     options.reserved_thread_id = Some(reservation.thread_id);
+    require_host_admission(extras.ownership, reservation.turn_admission.is_some())?;
+    if extras.ownership == AgentRuntimeOwnership::Host {
+        options
+            .thread_extension_init
+            .insert(AgentRuntimeOwnership::Host);
+    }
     if let Some(admission) = reservation.turn_admission {
         options.thread_extension_init.insert(admission);
     }
     if let Some(accounting) = reservation.usage_accounting {
         options.thread_extension_init.insert(accounting);
     }
+    if let Some(reporter) = extras.outcome_reporter {
+        options.thread_extension_init.insert(reporter);
+    }
+    // Register before the thread starts: a terminal turn can never precede it.
+    let registration = extras.workflow_run.as_deref().map(|run_id| {
+        runtime
+            .workflow_children
+            .register(reservation.thread_id, run_id);
+        WorkflowChildGuard::new(
+            Arc::clone(&runtime.workflow_children),
+            reservation.thread_id,
+        )
+    });
     let child = state
         .spawn_host_child_thread(
             options,
@@ -168,23 +218,73 @@ pub(super) async fn create_spawn(
     }
     let config = effective_spawn_config(&child.thread).await?;
     let status = child.thread.io.agent_status.borrow().clone();
-    let _active = invocation.lock_active()?;
+    let _active = active.map(ToolInvocationContext::lock_active).transpose()?;
     let _membership = pending.disarm();
     state.notify_thread_created(child.thread_id);
-    Ok(ThreadSpawnResult {
-        agent: LiveAgent {
-            thread_id: child.thread_id,
-            metadata: AgentMetadata {
-                agent_id: Some(child.thread_id),
-                agent_path: Some(task_name.clone()),
-                agent_nickname: child.thread.session_source.get_nickname(),
-                agent_role: child.thread.session_source.get_agent_role(),
+    Ok(HostChildSpawn {
+        child: ThreadSpawnResult {
+            agent: LiveAgent {
+                thread_id: child.thread_id,
+                metadata: AgentMetadata {
+                    agent_id: Some(child.thread_id),
+                    agent_path: Some(task_name.clone()),
+                    agent_nickname: child.thread.session_source.get_nickname(),
+                    agent_role: child.thread.session_source.get_agent_role(),
+                },
+                status,
             },
-            status,
+            config,
+            task_name,
         },
-        config,
-        task_name,
+        registration,
     })
+}
+
+/// Existing tool entry point; signature and behavior are unchanged.
+pub(super) async fn create_spawn(
+    parent: &CodexThread,
+    invocation: &ToolInvocationContext,
+    request: ChildSpawnSettings,
+    task_name: AgentPath,
+    reservation: HostThreadSpawnReservation,
+) -> std::result::Result<ThreadSpawnResult, ThreadSpawnError> {
+    let spawned = create_spawn_impl(
+        parent,
+        request,
+        task_name,
+        reservation,
+        HostChildExtras::default(),
+        Some(invocation),
+    )
+    .await?;
+    debug_assert!(spawned.registration.is_none());
+    Ok(spawned.child)
+}
+
+/// Background host entry point: no tool invocation owns the child.
+pub(crate) async fn create_host_child(
+    parent: &CodexThread,
+    settings: ChildSpawnSettings,
+    task_name: AgentPath,
+    reservation: HostThreadSpawnReservation,
+    extras: HostChildExtras,
+) -> std::result::Result<HostChildSpawn, ThreadSpawnError> {
+    create_spawn_impl(parent, settings, task_name, reservation, extras, None).await
+}
+
+/// A host-owned child runs turns outside any parent turn, so it must always
+/// carry a turn-admission permit. Controller-owned (tool) children inherit the
+/// parent turn and do not need one.
+fn require_host_admission(
+    ownership: AgentRuntimeOwnership,
+    has_admission: bool,
+) -> std::result::Result<(), ThreadSpawnError> {
+    if ownership == AgentRuntimeOwnership::Host && !has_admission {
+        return Err(ThreadSpawnError::InvalidRequest(
+            "host-owned child requires turn_admission".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

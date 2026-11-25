@@ -2,7 +2,9 @@ load("//:defs.bzl", "codex_rust_crate")
 
 codex_rust_crate(
     name = "core",
-    compile_data = glob(["assets/**"]),
+    # TASK-020: workflow assets are embedded at compile time by build.rs, and the
+    # workflow_assets_check integration test needs them at run time.
+    compile_data = glob(["assets/**"]) + glob(["src/workflow/assets/**"]),
     crate_name = "codex_core",
     crate_srcs = glob(["src/**/*.rs"]) + [
         "//codex-rs/ext/guardian-v2:src/sync_reviewer/reviewer_config.rs",
@@ -19,7 +21,7 @@ codex_rust_crate(
         "//codex-rs/windows-sandbox-rs:codex-windows-managed-deny-probe",
         "//codex-rs/windows-sandbox-rs:codex-windows-sandbox-setup",
     ],
-    integration_compile_data_extra = glob(["assets/**"]) + [
+    integration_compile_data_extra = glob(["assets/**"]) + glob(["src/workflow/assets/**"]) + [
         "//codex-rs/message-board:tests/common/mod.rs",
         "//codex-rs/prompts:templates/permissions/approval_policy/on_request_rule_request_permission.md",
     ],
@@ -37,7 +39,7 @@ codex_rust_crate(
     test_data_extra = [
         "//codex-rs/message-board-mcp:package-files",
         "config.schema.json",
-    ] + glob(["src/**/snapshots/**"]) + [
+    ] + glob(["src/**/snapshots/**"]) + glob(["src/workflow/assets/**"]) + [
     ],
     test_shard_counts = {
         "core-all-test": 16,
