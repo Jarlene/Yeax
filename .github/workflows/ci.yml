@@ -1,0 +1,44 @@
+name: ci
+
+# TASK-035: the workflow migration must not add formatting drift or new clippy
+# warnings. Existing warnings are tracked in the task ledger instead of being
+# silenced with allow attributes.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  workflow-fmt:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
+
+  workflow-clippy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: cargo clippy (workflow crates, deny warnings)
+        run: >
+          cargo clippy
+          -p codex-workflow
+          -p codex-workflow-assets-gen
+          -p codex-core
+          -p codex-tui
+          -p codex-app-server-protocol
+          -p codex-app-server
+          --all-targets -- -D warnings

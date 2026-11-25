@@ -218,6 +218,158 @@ impl Drop for AgentTreeTeardownGuard {
     }
 }
 
+/// One workflow child tracked by the tree until its final attempt lands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkflowChildEntry {
+    pub(crate) run_id: String,
+    pub(crate) attempts: u32,
+}
+
+/// Tree-scoped registry of workflow children.
+///
+/// Registration happens before the child thread starts, so a terminal turn can
+/// never arrive before its `owns()` check. Finalized threads keep a tombstone
+/// until the owning run clears it, which keeps late terminals from reaching the
+/// parent mailbox after the run moved on.
+#[derive(Debug, Default)]
+pub(crate) struct WorkflowChildRegistry {
+    active: Mutex<HashMap<ThreadId, WorkflowChildEntry>>,
+    /// Tombstones keep their run so `clear_run` can reclaim exactly one run.
+    finalized: Mutex<HashMap<ThreadId, String>>,
+}
+
+impl WorkflowChildRegistry {
+    pub(crate) fn register(&self, thread_id: ThreadId, run_id: &str) {
+        self.active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                thread_id,
+                WorkflowChildEntry {
+                    run_id: run_id.to_string(),
+                    attempts: 0,
+                },
+            );
+    }
+
+    /// Active rows and finalized tombstones both suppress parent-only delivery.
+    pub(crate) fn owns(&self, thread_id: ThreadId) -> bool {
+        self.active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(&thread_id)
+            || self
+                .finalized
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains_key(&thread_id)
+    }
+
+    pub(crate) fn note_attempt(&self, thread_id: ThreadId) -> u32 {
+        let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(entry) = active.get_mut(&thread_id) else {
+            return 0;
+        };
+        entry.attempts = entry.attempts.saturating_add(1);
+        entry.attempts
+    }
+
+    pub(crate) fn attempts(&self, thread_id: ThreadId) -> Option<u32> {
+        self.active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&thread_id)
+            .map(|entry| entry.attempts)
+    }
+
+    /// Undo a registration whose child was never accepted (create/send failure).
+    pub(crate) fn release(&self, thread_id: ThreadId) {
+        self.active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&thread_id);
+    }
+
+    /// Final attempt: move the row to the tombstone map so late terminals stay
+    /// suppressed until `clear_run`.
+    pub(crate) fn finalize(&self, thread_id: ThreadId) {
+        let removed = self
+            .active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&thread_id);
+        if let Some(entry) = removed {
+            self.finalized
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(thread_id, entry.run_id);
+        }
+    }
+
+    pub(crate) fn clear_run(&self, run_id: &str) {
+        let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        active.retain(|_, entry| entry.run_id != run_id);
+        drop(active);
+        self.finalized
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|_, entry_run| entry_run != run_id);
+    }
+
+    pub(crate) fn active_ids(&self) -> Vec<ThreadId> {
+        self.active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .copied()
+            .collect()
+    }
+
+    pub(crate) fn active_len(&self) -> usize {
+        self.active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
+    pub(crate) fn finalized_len(&self) -> usize {
+        self.finalized
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+}
+
+/// Registration returned to the creator; dropping an armed guard unregisters.
+pub(crate) struct WorkflowChildGuard {
+    registry: Arc<WorkflowChildRegistry>,
+    thread_id: ThreadId,
+    armed: bool,
+}
+
+impl WorkflowChildGuard {
+    pub(crate) fn new(registry: Arc<WorkflowChildRegistry>, thread_id: ThreadId) -> Self {
+        Self {
+            registry,
+            thread_id,
+            armed: true,
+        }
+    }
+
+    /// The send was accepted: hub finalization now owns the registration.
+    pub(crate) fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for WorkflowChildGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.registry.release(self.thread_id);
+        }
+    }
+}
+
 /// Local tree state, kept separate from the shared agent operation interface.
 #[derive(Clone)]
 pub(crate) struct LocalAgentRuntime {
@@ -239,12 +391,19 @@ pub(crate) struct LocalAgentRuntime {
     pub(super) residency: Arc<V2Residency>,
     pub(super) unconfirmed_results: Arc<AtomicUsize>,
     pub(super) mailboxes: Arc<super::mailbox::Mailboxes>,
+    /// Workflow children in this tree, shared with terminal delivery.
+    pub(crate) workflow_children: Arc<WorkflowChildRegistry>,
     /// Shared by every session in this tree, including private delegates.
     pub(crate) shutdown: CancellationToken,
     shutdown_state: Arc<AgentTreeShutdownState>,
 }
 
 impl LocalAgentRuntime {
+    /// Tree state for crate-level hosts that must resolve a live thread handle.
+    pub(crate) fn thread_manager_state(&self) -> CodexResult<Arc<ThreadManagerState>> {
+        self.upgrade()
+    }
+
     pub(super) fn new(
         manager: Weak<ThreadManagerState>,
         thread_id_generator: ThreadIdGenerator,
@@ -257,6 +416,7 @@ impl LocalAgentRuntime {
             residency: Arc::default(),
             unconfirmed_results: Arc::default(),
             mailboxes: Arc::default(),
+            workflow_children: Arc::default(),
             shutdown: CancellationToken::new(),
             shutdown_state: Arc::default(),
             agent_execution_limiter: Arc::default(),

@@ -3044,6 +3044,14 @@ impl Session {
         .await;
     }
 
+    /// Delivers a transient event without writing it into the rollout.
+    ///
+    /// Workflow snapshots are re-derivable live state (and may be large), so
+    /// they are forwarded to clients but never persisted as conversation items.
+    pub(crate) async fn send_event_ephemeral(&self, event: Event) {
+        Box::pin(self.send_event_raw_with_persistence(event, /*persist*/ false)).await;
+    }
+
     /// Delivers an event without creating a local rollout for a thread that has not materialized.
     pub(crate) async fn send_event_raw_without_materializing_rollout(&self, event: Event) {
         let persist = match self.current_rollout_path().await {

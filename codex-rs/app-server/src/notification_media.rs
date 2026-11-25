@@ -140,7 +140,8 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
         | ServerNotification::WindowsSandboxSetupCompleted(_)
         | ServerNotification::AccountLoginCompleted(_)
         | ServerNotification::ThreadSearchPartial(_)
-        | ServerNotification::GatewayOAuthChanged(_) => notification,
+        | ServerNotification::GatewayOAuthChanged(_)
+        | ServerNotification::WorkflowUpdated(_) => notification,
     }
 }
 

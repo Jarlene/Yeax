@@ -258,3 +258,56 @@ async fn failure_report_counts_omitted_failures() {
         }
     );
 }
+
+#[test]
+fn workflow_child_registry_tracks_attempts_and_tombstones() {
+    let registry = Arc::new(WorkflowChildRegistry::default());
+    let thread = ThreadId::new();
+    registry.register(thread, "wf_1");
+    assert!(registry.owns(thread));
+    assert_eq!(registry.active_len(), 1);
+    assert_eq!(registry.active_ids(), vec![thread]);
+
+    assert_eq!(registry.note_attempt(thread), 1);
+    assert_eq!(registry.note_attempt(thread), 2);
+    assert_eq!(registry.attempts(thread), Some(2));
+
+    registry.finalize(thread);
+    assert!(registry.owns(thread), "tombstone keeps owning the thread");
+    assert_eq!(registry.active_len(), 0);
+    assert_eq!(registry.finalized_len(), 1);
+
+    registry.clear_run("wf_1");
+    assert!(!registry.owns(thread));
+    assert_eq!(registry.finalized_len(), 0);
+}
+
+#[test]
+fn workflow_child_registry_release_undoes_an_unsent_registration() {
+    let registry = Arc::new(WorkflowChildRegistry::default());
+    let thread = ThreadId::new();
+    registry.register(thread, "wf_2");
+    let guard = WorkflowChildGuard::new(Arc::clone(&registry), thread);
+    drop(guard);
+    assert!(!registry.owns(thread));
+    assert!(registry.active_ids().is_empty());
+}
+
+#[test]
+fn disarmed_workflow_child_guard_leaves_the_registration_to_the_hub() {
+    let registry = Arc::new(WorkflowChildRegistry::default());
+    let thread = ThreadId::new();
+    registry.register(thread, "wf_3");
+    WorkflowChildGuard::new(Arc::clone(&registry), thread).disarm();
+    assert!(registry.owns(thread));
+}
+
+#[test]
+fn every_runtime_clone_shares_one_workflow_child_registry() {
+    let runtime = runtime();
+    let clone = runtime.clone();
+    assert!(Arc::ptr_eq(
+        &runtime.workflow_children,
+        &clone.workflow_children
+    ));
+}

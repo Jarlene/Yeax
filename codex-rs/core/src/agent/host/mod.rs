@@ -30,6 +30,8 @@ pub(crate) use service_tier::propagate_config_update;
 pub(crate) use service_tier::service_tier;
 pub use session_reader::AgentRef;
 pub use session_reader::AgentSessionReader;
+pub(crate) use spawn::HostChildExtras;
+pub(crate) use spawn::create_host_child;
 pub use types::HostThreadSpawnReservation;
 pub use types::InheritedSessionId;
 pub use types::PreparedChildContext;

@@ -2,6 +2,9 @@
 
 //! Tests same-manager child bindings and invocation lifetime.
 
+use super::AgentRuntimeOwnership;
+use super::HostChildExtras;
+use super::require_host_admission;
 use crate::CodexThread;
 use crate::ConfigRefreshOutcome;
 use crate::HostThreadSpawnReservation;
@@ -259,4 +262,34 @@ async fn same_manager_creation_retains_step_executor_and_shares_exec_policy() ->
     child.shutdown_and_wait().await?;
     parent.shutdown_and_wait().await?;
     Ok(())
+}
+
+#[test]
+fn host_owned_child_without_turn_admission_is_rejected() {
+    let error = require_host_admission(AgentRuntimeOwnership::Host, false)
+        .expect_err("host ownership needs admission");
+    assert!(matches!(
+        error,
+        ThreadSpawnError::InvalidRequest(message)
+            if message == "host-owned child requires turn_admission"
+    ));
+}
+
+#[test]
+fn host_owned_child_with_turn_admission_is_accepted() {
+    require_host_admission(AgentRuntimeOwnership::Host, true).expect("admission present");
+}
+
+#[test]
+fn controller_owned_child_needs_no_turn_admission() {
+    require_host_admission(AgentRuntimeOwnership::Controller, false).expect("tool child");
+}
+
+#[test]
+fn tool_path_extras_default_to_controller_ownership() {
+    assert_eq!(
+        HostChildExtras::default().ownership,
+        AgentRuntimeOwnership::Controller
+    );
+    assert!(HostChildExtras::default().outcome_reporter.is_none());
 }

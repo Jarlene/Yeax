@@ -1,0 +1,32 @@
+[package]
+name = "codex-workflow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rhai-scripted workflow engine: scripts orchestrate agents through a host channel"
+
+[lib]
+name = "codex_workflow"
+path = "src/lib.rs"
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+rhai = { version = "1.27", features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+strum = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tracing = { workspace = true }
+
+[target."cfg(unix)".dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full"] }

@@ -2302,6 +2302,10 @@ impl App {
             AppEvent::ClearThreadGoal { thread_id } => {
                 self.clear_thread_goal(app_server, thread_id).await;
             }
+            AppEvent::WorkflowCommand { thread_id, command } => {
+                self.handle_workflow_command(app_server, thread_id, command)
+                    .await;
+            }
             AppEvent::SendAddCreditsNudgeEmail { credit_type } => {
                 if let Some(request_id) = self
                     .chat_widget

@@ -7,6 +7,7 @@ use crate::agent::api::AgentControl;
 use crate::agent::api::AgentInfo;
 use crate::agent::api::AgentInput;
 use crate::agent::api::AgentTarget;
+use crate::agent::api::AgentTurnOutcome;
 use crate::agent::api::SendRequest;
 use crate::agent::api::SpawnRequest;
 use crate::agent::next_thread_spawn_depth;
@@ -89,6 +90,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentActivityKind;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
@@ -105,6 +107,7 @@ use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::WorldStateItem;
 use codex_protocol_test_support::ContentItemTestExt;
+use codex_rollout_trace::ThreadTraceContext;
 use codex_thread_context_ids_test_support::thread_context_ids;
 use codex_thread_store::ArchiveThreadParams;
 use codex_thread_store::InMemoryThreadStore;
@@ -6097,4 +6100,89 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
         .shutdown_agent_tree(parent_thread_id)
         .await
         .expect("tree shutdown after partial subtree resume should succeed");
+}
+
+/// TASK-025 acceptance: a workflow child's terminal turn is delivered through
+/// its run hub, so the parent mailbox stays empty while the child's activity,
+/// usage, and rollout are still retained.
+#[tokio::test]
+async fn workflow_child_terminal_turn_skips_parent_mailbox_but_keeps_activity_usage_and_rollout() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_id, parent_thread) = harness.start_thread().await;
+    let (child_id, child_thread) = harness.start_thread().await;
+
+    harness
+        .control
+        .runtime
+        .workflow_children
+        .register(child_id, "wf-run-1");
+    let usage_before = child_thread.session.total_token_usage().await;
+
+    let outcome = AgentTurnOutcome {
+        thread_id: child_id,
+        turn_id: "child-turn-1".to_string(),
+        source: SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: parent_id,
+            depth: 1,
+            agent_path: Some(AgentPath::try_from("/root/wf_child").expect("agent path")),
+            agent_nickname: None,
+            agent_role: None,
+        }),
+        parent_turn_id: Some("parent-turn-1".to_string()),
+        initiating_agent_path: None,
+        status: AgentStatus::Completed(Some("done".to_string())),
+        error_info: None,
+    };
+    harness
+        .control
+        .notify_parent_of_terminal_turn(outcome, &ThreadTraceContext::disabled())
+        .await;
+
+    // Activity is preserved: the parent turn still observes the completion.
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let event = parent_thread
+                .next_event()
+                .await
+                .expect("parent event stream should stay open");
+            if let EventMsg::ItemCompleted(ItemCompletedEvent {
+                item: TurnItem::SubAgentActivity(activity),
+                ..
+            }) = event.msg
+                && activity.kind == SubAgentActivityKind::Completed
+            {
+                assert_eq!(activity.agent_thread_id, child_id);
+                return;
+            }
+        }
+    })
+    .await
+    .expect("parent should observe the workflow child's completed activity");
+
+    // The parent mailbox stays empty: workflow children deliver via their hub.
+    let mailbox_deliveries = harness
+        .manager
+        .captured_ops()
+        .into_iter()
+        .filter(|(thread_id, op)| {
+            *thread_id == parent_id && matches!(op, Op::InterAgentCommunication { .. })
+        })
+        .count();
+    assert_eq!(
+        mailbox_deliveries, 0,
+        "workflow children must not deliver terminal results to the parent mailbox"
+    );
+
+    // Usage and rollout are retained for the run hub and later inspection.
+    assert_eq!(child_thread.session.total_token_usage().await, usage_before);
+    child_thread.ensure_rollout_materialized().await;
+    assert!(
+        child_thread
+            .read_thread(
+                /*include_archived*/ true, /*include_history*/ false
+            )
+            .await
+            .is_ok()
+    );
+    assert!(harness.manager.get_thread(child_id).await.is_ok());
 }

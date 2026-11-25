@@ -42,6 +42,8 @@ pub enum SlashCommand {
     Config,
     Recap,
     Plan,
+    Workflow,
+    Workflows,
     Voice,
     Goal,
     Agents,
@@ -142,6 +144,8 @@ impl SlashCommand {
                 "include current selection, open files, and other context from your IDE"
             }
             SlashCommand::Plan => "switch to Plan mode",
+            SlashCommand::Workflow => "start, list, pause, resume, stop, or save a workflow run",
+            SlashCommand::Workflows => "show workflow runs for the current thread",
             SlashCommand::Voice => "start or stop voice; use /voice settings to choose a voice",
             SlashCommand::Goal => "set or view the goal for a long-running task",
             SlashCommand::Agents => "open the agent command center",
@@ -186,6 +190,7 @@ impl SlashCommand {
                 | SlashCommand::Fork
                 | SlashCommand::Plan
                 | SlashCommand::Goal
+                | SlashCommand::Workflow
                 | SlashCommand::Voice
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
@@ -325,6 +330,7 @@ impl SlashCommand {
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
             SlashCommand::Agents | SlashCommand::MultiAgents => true,
+            SlashCommand::Workflow | SlashCommand::Workflows => true,
             SlashCommand::Config | SlashCommand::Theme | SlashCommand::Pets => false,
         }
     }

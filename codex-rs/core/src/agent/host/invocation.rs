@@ -193,9 +193,21 @@ pub(crate) async fn create(
     reservation: HostThreadSpawnReservation,
 ) -> Result<ThreadSpawnResult, ThreadSpawnError> {
     with_live_invocation(thread, invocation, |step| async move {
-        let (settings, task_name) =
-            crate::thread_spawn::prepare(&thread.session, &step, &invocation.call_id, request)
-                .await?;
+        let agent_path = step
+            .turn
+            .session_source
+            .get_agent_path()
+            .unwrap_or_else(codex_protocol::AgentPath::root)
+            .join(&request.task_name)
+            .map_err(ThreadSpawnError::Preparation)?;
+        let (settings, task_name) = crate::thread_spawn::prepare_under_path(
+            &thread.session,
+            &step,
+            &invocation.call_id,
+            request,
+            agent_path,
+        )
+        .await?;
         Box::pin(create_spawn(
             thread,
             invocation,

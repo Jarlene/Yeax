@@ -54,6 +54,7 @@ use crate::request_processors::WindowsSandboxRequestProcessor;
 use crate::request_processors::account_processor::handle_gcp_setup;
 use crate::request_processors::read_server_diagnostics;
 use crate::request_processors::thread_list_state::ThreadListState;
+use crate::request_processors::workflow_processor::WorkflowRequestProcessor;
 use crate::request_serialization::QueuedInitializedRequest;
 use crate::request_serialization::RequestSerializationQueueKey;
 use crate::request_serialization::RequestSerializationQueues;
@@ -183,6 +184,7 @@ pub(crate) struct MessageProcessor {
     thread_processor: ThreadRequestProcessor,
     turn_processor: TurnRequestProcessor,
     windows_sandbox_processor: WindowsSandboxRequestProcessor,
+    workflow_processor: WorkflowRequestProcessor,
     request_serialization_queues: RequestSerializationQueues,
 }
 
@@ -643,6 +645,7 @@ impl MessageProcessor {
             Arc::clone(&config),
             config_manager,
         );
+        let workflow_processor = WorkflowRequestProcessor::new(Arc::clone(&thread_manager));
 
         Self {
             turn_admission,
@@ -677,6 +680,7 @@ impl MessageProcessor {
             thread_processor,
             turn_processor,
             windows_sandbox_processor,
+            workflow_processor,
             request_serialization_queues,
         }
     }
@@ -1657,6 +1661,21 @@ impl MessageProcessor {
             }
             ClientRequest::ThreadList { params, .. } => {
                 self.thread_processor.thread_list(params).await
+            }
+            ClientRequest::WorkflowList { params, .. } => {
+                self.workflow_processor.workflow_list(params).await
+            }
+            ClientRequest::WorkflowPause { params, .. } => {
+                self.workflow_processor.workflow_pause(params).await
+            }
+            ClientRequest::WorkflowResume { params, .. } => {
+                self.workflow_processor.workflow_resume(params).await
+            }
+            ClientRequest::WorkflowStop { params, .. } => {
+                self.workflow_processor.workflow_stop(params).await
+            }
+            ClientRequest::WorkflowSave { params, .. } => {
+                self.workflow_processor.workflow_save(params).await
             }
             ClientRequest::ProjectList { params, .. } => {
                 self.project_processor.project_list(params).await

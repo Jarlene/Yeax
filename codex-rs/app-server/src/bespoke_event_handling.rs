@@ -86,6 +86,9 @@ use codex_app_server_protocol::TurnPlanUpdatedNotification;
 use codex_app_server_protocol::TurnStartedNotification;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::WarningNotification;
+use codex_app_server_protocol::WorkflowAgentInfo;
+use codex_app_server_protocol::WorkflowPhaseInfo;
+use codex_app_server_protocol::WorkflowUpdatedNotification;
 use codex_app_server_protocol::build_item_from_guardian_event;
 use codex_app_server_protocol::guardian_auto_approval_review_notification;
 use codex_app_server_protocol::item_event_to_server_notification;
@@ -1367,6 +1370,57 @@ pub(crate) async fn apply_bespoke_event_handling(
             }
             thread_watch_manager
                 .note_thread_shutdown(&conversation_id.to_string())
+                .await;
+        }
+
+        EventMsg::WorkflowUpdated(event) => {
+            let notification = WorkflowUpdatedNotification {
+                thread_id: event.thread_id.to_string(),
+                run_id: event.run_id,
+                revision: event.revision,
+                name: event.name,
+                objective: event.objective,
+                status: event.status,
+                foreground: event.foreground,
+                phases: event
+                    .phases
+                    .into_iter()
+                    .map(|phase| WorkflowPhaseInfo {
+                        title: phase.title,
+                        state: phase.state,
+                    })
+                    .collect(),
+                current_phase: event.current_phase,
+                agent_budget: event.agent_budget,
+                agents_used: event.agents_used,
+                agents_reserved: event.agents_reserved,
+                agents_remaining: event.agents_remaining,
+                agent_usage_incomplete: event.agent_usage_incomplete,
+                elapsed_ms: event.elapsed_ms,
+                active_agents: event.active_agents,
+                current_agent_label: event.current_agent_label,
+                agents: event
+                    .agents
+                    .into_iter()
+                    .map(|agent| WorkflowAgentInfo {
+                        agent_id: agent.agent_id,
+                        label: agent.label,
+                        phase: agent.phase,
+                        model: agent.model,
+                        state: agent.state,
+                        tokens_used: agent.tokens_used,
+                        duration_ms: agent.duration_ms,
+                    })
+                    .collect(),
+                last_event: event.last_event,
+                last_event_detail: event.last_event_detail,
+                last_event_timestamp: event.last_event_timestamp,
+                pause_message: event.pause_message,
+                result_summary: event.result_summary,
+                degraded_fields: event.degraded_fields,
+            };
+            outgoing
+                .send_server_notification(ServerNotification::WorkflowUpdated(notification))
                 .await;
         }
 

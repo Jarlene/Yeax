@@ -107,6 +107,11 @@ impl LocalAgentControl {
         let Some(message) = message else {
             return;
         };
+        // Workflow children deliver through their run hub, not the parent mailbox.
+        // Read-only: finalization (not this path) releases the registration.
+        if self.runtime.workflow_children.owns(outcome.thread_id) {
+            return;
+        }
         let trace_message = trace.is_enabled().then(|| message.clone());
         let mut communication = InterAgentCommunication::new(
             child_agent_path.clone(),

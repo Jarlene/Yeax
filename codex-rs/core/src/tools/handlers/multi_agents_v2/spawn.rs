@@ -137,7 +137,9 @@ async fn handle_spawn_agent(
     )
     .await
     .map_err(|err| match err {
-        ThreadSpawnError::Preparation(message) => FunctionCallError::RespondToModel(message),
+        ThreadSpawnError::InvalidRequest(message) | ThreadSpawnError::Preparation(message) => {
+            FunctionCallError::RespondToModel(message)
+        }
         ThreadSpawnError::Backend(err) => {
             record_collab_spawn_failure(
                 &turn.session_telemetry,

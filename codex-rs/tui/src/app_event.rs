@@ -991,6 +991,12 @@ pub(crate) enum AppEvent {
         thread_id: ThreadId,
     },
 
+    /// Run a workflow control command for the active thread via app-server.
+    WorkflowCommand {
+        thread_id: ThreadId,
+        command: crate::app::workflows::WorkflowCommand,
+    },
+
     /// Result of refreshing rate limits.
     RateLimitsLoaded {
         request_id: u64,

@@ -55,6 +55,18 @@ impl ChatWidget {
         self.bottom_pane.record_pending_slash_command_history();
     }
 
+    fn dispatch_workflow_command(&mut self, command: crate::app::workflows::WorkflowCommand) {
+        let Some(thread_id) = self.thread_id else {
+            self.add_info_message(
+                "The session must start before you can use workflows.".to_string(),
+                None,
+            );
+            return;
+        };
+        self.app_event_tx
+            .send(AppEvent::WorkflowCommand { thread_id, command });
+    }
+
     pub(super) fn handle_service_tier_command_dispatch(&mut self, command: ServiceTierCommand) {
         self.transcript.last_status_copy_targets = None;
         if self.active_side_conversation {
@@ -687,6 +699,20 @@ impl ChatWidget {
                     );
                 }
             }
+            SlashCommand::Workflow => {
+                self.add_info_message(
+                    crate::app::workflows::WORKFLOW_USAGE.to_string(),
+                    Some(
+                        "Example: /workflow hello-workflow --agent-budget 4 research rust"
+                            .to_string(),
+                    ),
+                );
+            }
+            SlashCommand::Workflows => {
+                self.dispatch_workflow_command(crate::app::workflows::WorkflowCommand::Runs {
+                    include_completed: true,
+                });
+            }
             SlashCommand::TestApproval => {
                 use std::collections::HashMap;
 
@@ -1229,6 +1255,42 @@ impl ChatWidget {
             SlashCommand::Pets if !trimmed.is_empty() => {
                 self.select_pet_by_id(args);
             }
+            SlashCommand::Workflow => {
+                match crate::app::workflows::parse_workflow_command(trimmed) {
+                    Ok(crate::app::workflows::WorkflowCommand::Start(start)) => {
+                        let prompt = crate::app::workflows::start_prompt(&start);
+                        if !self.is_session_configured() {
+                            self.add_info_message(
+                                "The session must start before you can launch a workflow."
+                                    .to_string(),
+                                None,
+                            );
+                            return;
+                        }
+                        self.submit_user_message_with_shell_escape_policy(
+                            UserMessage {
+                                text: prompt,
+                                local_images: Vec::new(),
+                                remote_image_urls: Vec::new(),
+                                text_elements: Vec::new(),
+                                mention_bindings: Vec::new(),
+                            },
+                            ShellEscapePolicy::Disallow,
+                        );
+                        self.append_message_history_entry(format!("/workflow {trimmed}"));
+                    }
+                    Ok(command) => {
+                        self.dispatch_workflow_command(command);
+                        self.append_message_history_entry(format!("/workflow {trimmed}"));
+                    }
+                    Err(error) => self.add_error_message(error.to_string()),
+                }
+            }
+            SlashCommand::Workflows => {
+                self.dispatch_workflow_command(crate::app::workflows::WorkflowCommand::Runs {
+                    include_completed: true,
+                });
+            }
             _ => self.dispatch_command_from_source(cmd, source),
         }
         if source == SlashCommandDispatchSource::Live && cmd != SlashCommand::Goal {
@@ -1457,7 +1519,9 @@ impl ChatWidget {
             | SlashCommand::Config
             | SlashCommand::Theme
             | SlashCommand::Tui
-            | SlashCommand::Pets => QueueDrain::Stop,
+            | SlashCommand::Pets
+            | SlashCommand::Workflow
+            | SlashCommand::Workflows => QueueDrain::Stop,
         }
     }
 

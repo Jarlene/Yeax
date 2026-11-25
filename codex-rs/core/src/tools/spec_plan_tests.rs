@@ -942,6 +942,57 @@ async fn update_plan_tool_respects_config_gate() {
 }
 
 #[tokio::test]
+async fn workflow_tool_requires_feature_multi_agent_v2_and_root_agent() {
+    let feature_only = probe(|turn| {
+        set_features(turn, &[Feature::Workflows]);
+    })
+    .await;
+    feature_only.assert_visible_lacks(&["workflow"]);
+    feature_only.assert_registered_lacks(&["workflow"]);
+
+    let v2_only = probe(|turn| {
+        set_features(turn, &[Feature::MultiAgentV2]);
+    })
+    .await;
+    v2_only.assert_visible_lacks(&["workflow"]);
+    v2_only.assert_registered_lacks(&["workflow"]);
+
+    let root = probe(|turn| {
+        set_features(turn, &[Feature::Workflows, Feature::MultiAgentV2]);
+    })
+    .await;
+    root.assert_visible_contains(&["workflow"]);
+    root.assert_registered_contains(&["workflow"]);
+    let ToolSpec::Function(tool) = root.visible_spec("workflow") else {
+        panic!("workflow must be a plain function tool");
+    };
+    assert!(tool.description.contains("parallel"));
+    assert!(tool.description.contains("pipeline"));
+    assert!(
+        tool.parameters
+            .properties
+            .as_ref()
+            .is_some_and(|properties| {
+                properties.contains_key("source") && properties.contains_key("agent_budget")
+            })
+    );
+
+    let child = probe(|turn| {
+        set_features(turn, &[Feature::Workflows, Feature::MultiAgentV2]);
+        turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::new(),
+            depth: 1,
+            agent_path: Some(AgentPath::try_from("/root/worker").expect("valid agent path")),
+            agent_nickname: None,
+            agent_role: None,
+        });
+    })
+    .await;
+    child.assert_visible_lacks(&["workflow"]);
+    child.assert_registered_lacks(&["workflow"]);
+}
+
+#[tokio::test]
 async fn request_user_input_stays_direct_in_code_mode_only() {
     let plan = probe(|turn| {
         set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);

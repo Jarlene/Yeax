@@ -1,0 +1,26 @@
+[package]
+name = "codex-workflow-assets-gen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Deterministic generator and checker for embedded workflow assets"
+
+[lib]
+name = "codex_workflow_assets_gen"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "codex-workflow-assets-gen"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+codex-workflow = { workspace = true }
+rhai = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

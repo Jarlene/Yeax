@@ -1771,6 +1771,10 @@ pub enum EventMsg {
 
     /// Path-based v2 sub-agent activity.
     SubAgentActivity(SubAgentActivityEvent),
+
+    /// Workflow run snapshot. Routed by `thread_id`; clients accept only a
+    /// strictly larger `revision` for the same run.
+    WorkflowUpdated(crate::workflow::WorkflowUpdatedEvent),
 }
 
 impl EventMsg {
